@@ -18,7 +18,12 @@ QUESTIONS = [
 
 if not gemini_key():
     sys.exit("GEMINI_API_KEY is not set")
-agent, _ = build(offline=False)
+agent, voice = build(offline=False)
+if "--voice" in sys.argv:   # speech round trip: speak each question, then listen to it again
+    for q, lang in QUESTIONS[:3]:
+        wav = voice.speak(q)
+        heard = voice.listen(wav, "audio/wav") if wav else {"text": "(no speech)", "language": ""}
+        print(f"[voice {lang}] said : {q}\n            heard: {heard['text']} ({heard['language']})")
 print("model:", model_name())
 ok = 0
 for q, lang in QUESTIONS:
