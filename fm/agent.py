@@ -63,13 +63,23 @@ Rules:
 3. If the worker reports a fault that the manual says needs maintenance (or it repeats, or the worker asks), call
    raise_fault_ticket. If a spare part is needed, call check_spare_stock, and if the worker or supervisor asks for
    a repair job, call create_work_order. These write tools only PROPOSE the action; the worker confirms on screen.
-4. Reply in {language}, in that language's own script (Hinglish/Banglish/English in Latin letters). Short and
-   spoken-style: at most 4 short sentences, numbers as digits, no markdown, no tables, no URLs. Mention the
-   alarm code or part number when relevant. If you proposed an action, end by asking the worker to confirm.
+   NEVER say a ticket or work order "is raised/created/done": say you have prepared it and ask "Shall I raise it?".
+4. Reply in {language}. {script_rule} Short and spoken-style: at most 4 short sentences, numbers as digits, no
+   markdown, no tables, no URLs. Alarm codes and part numbers stay as they are (E-205, SB-1250).
 
 Machines on the floor (id - name - type - place):
 {machines}
 """
+
+
+SCRIPT_RULE = {   # live 11 Nov 2026: without this, Bengali and Hindi answers came back in Latin letters
+    "bn": "Write in Bengali letters (বাংলা লিপি), e.g. 'কুল্যান্ট লেভেল কম।' - NOT in English/Latin letters.",
+    "hi": "Write in Devanagari letters (देवनागरी), e.g. 'कूलेंट लेवल कम है।' - NOT in English/Latin letters.",
+    "hinglish": "Write Hindi in Latin letters (Hinglish), e.g. 'Coolant level kam hai.'",
+    "banglish": "Write Bengali in Latin letters (Banglish), e.g. 'Coolant level kom ache.'",
+    "en": "Write in simple English.",
+}
+NATIVE = {"bn", "hi", "ta", "te", "gu", "kn", "ml", "or", "pa"}
 
 
 @dataclass
@@ -136,7 +146,19 @@ class GeminiBrain:
         if calls:
             self.contents.append(resp.candidates[0].content)   # keeps Gemini's thought signatures
             return calls, "", tin, tout
+        self.contents.append(resp.candidates[0].content)
         return [], (resp.text or "").strip(), tin, tout
+
+    def rewrite(self, instruction: str) -> tuple[str, int, int]:
+        """Follow-up in the same conversation, no tools (used to fix the script of an answer)."""
+        t = self.t
+        self.contents.append(t.Content(role="user", parts=[t.Part(text=instruction)]))
+        cfg = t.GenerateContentConfig(system_instruction=self.cfg.system_instruction, temperature=0.2)
+        resp = _retry(lambda: self.client.models.generate_content(model=self.model, contents=self.contents,
+                                                                  config=cfg))
+        u = getattr(resp, "usage_metadata", None)
+        return ((resp.text or "").strip(), getattr(u, "prompt_token_count", 0) or 0,
+                getattr(u, "candidates_token_count", 0) or 0)
 
 
 # --- offline brain: fixed rules so the app and tests run without a key ------------------------------------------
@@ -159,6 +181,9 @@ class MockBrain:
 
     def start(self, system: str, question: str) -> None:
         self.q, self.stage, self.found = question, 0, []
+
+    def rewrite(self, instruction: str) -> tuple[str, int, int]:
+        return "", 0, 0   # offline demo keeps the English text
 
     def _machine(self) -> tuple[str, str]:
         q = self.q.lower()
@@ -201,7 +226,8 @@ class FloorMitra:
 
     def _system(self, language: str) -> str:
         machines = "\n".join(f"- {m['id']} - {m['name']} - {m['type']} - {m['line']}" for m in self.plant.machines())
-        return SYSTEM.format(language=NAMES.get(language, language), machines=machines)
+        return SYSTEM.format(language=NAMES.get(language, language), script_rule=SCRIPT_RULE.get(
+            language, "Use that language's own script."), machines=machines)
 
     def _run_tool(self, name: str, args: dict, turn: Turn) -> dict | list:
         if name == "search_manuals":
@@ -252,6 +278,16 @@ class FloorMitra:
             results = [(n, self._run_tool(n, a, turn)) for n, a in calls]
         else:
             turn.answer = "Sorry, I could not finish. Please ask your supervisor."
+        if language in NATIVE and turn.answer and guess_language(turn.answer) != language:
+            # wrong letters (e.g. Bengali written in Latin): ask once to rewrite, keeping the content
+            text, tin, tout = self.brain.rewrite(f"Rewrite your last answer in {NAMES.get(language, language)} "
+                                                 f"using its own script. {SCRIPT_RULE.get(language, '')} "
+                                                 "Same content, same length. Only the answer.")
+            turn.input_tokens += tin
+            turn.output_tokens += tout
+            if text:
+                turn.answer = text
+                turn.steps.append(f"🔤 rewrote the answer in {NAMES.get(language, language)} script")
         if turn.pending and not re.search(r"\?|？|।|confirm|হ্যাঁ|हाँ", turn.answer[-80:]):
             turn.answer = f"{turn.answer} {phrase(CONFIRM_ASK, language)}".strip()
         if turn.pending:
