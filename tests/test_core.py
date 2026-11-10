@@ -68,6 +68,8 @@ def test_stock_question_is_read_only():
 
 def test_language_guess_and_lenient_listen_parse():
     assert guess_language("पैकिंग लाइन का कन्वेयर") == "hi"
-    assert guess_language("Compressor pe alarm") == "en"
+    assert guess_language("Do we have a spare coolant pump?") == "en"
+    assert guess_language("Lathe 1 se seeti jaisi awaaz aa rahi hai, work order bana do") == "hinglish"
+    assert guess_language("Spindle belt store-e koyta ache? ki korbo") == "banglish"
     assert parse_heard('{"text": "লেদ E-205", "language": "bn"}') == {"text": "লেদ E-205", "language": "bn"}
     assert parse_heard('{"text": "\\u09b2\\u09c7\\u09a6 \\u09", "language": "bn"}')["language"] == "bn"

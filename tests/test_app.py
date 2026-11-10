@@ -28,6 +28,8 @@ def test_worker_asks_confirms_and_supervisor_sees_ticket():
     at.radio(key="screen").set_value("🧑‍💼 Supervisor").run()
     assert not at.exception
     assert any(m.label == "Open tickets" and int(m.value) >= 1 for m in at.metric)
+    at.button(key="report").click().run()          # live bug 11 Nov: button key clashed with the state key
+    assert not at.exception and at.session_state["shift_report"]
 
 
 def test_hear_button_makes_audio_for_current_answer():
