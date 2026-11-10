@@ -9,10 +9,23 @@ NAMES = {"bn": "Bengali", "hi": "Hindi", "en": "English", "hinglish": "Hinglish 
          "gu": "Gujarati", "kn": "Kannada", "ml": "Malayalam", "or": "Odia", "pa": "Punjabi"}
 
 
+HINGLISH = set("hai hain kya nahi nahin raha rahi rahe karo kar karna bana banao do dijiye mein se ka ki ko kaise "
+               "kyun aur bhi abhi wala wali par pe chal gaya gayi hota hoti".split())
+BANGLISH = set("ache achhe korbo koro korte ki na hocche hochhe theke amar amader koyta koto keno dekhache "
+               "dekhachhe kothay ekhon hoye gele bolo din".split())
+
+
 def guess_language(text: str) -> str:
+    """Script first (বাংলা -> bn, देवनागरी -> hi ...); for Latin text, spot Hinglish / Banglish by common words."""
     counts = {code: sum(1 for ch in text if lo <= ch <= hi) for lo, hi, code in SCRIPTS}
     code, n = max(counts.items(), key=lambda kv: kv[1])
-    return code if n >= 3 else "en"
+    if n >= 3:
+        return code
+    words = text.lower().replace("?", " ").replace(",", " ").split()
+    hi_hits, bn_hits = sum(w in HINGLISH for w in words), sum(w in BANGLISH for w in words)
+    if max(hi_hits, bn_hits) >= 2:
+        return "hinglish" if hi_hits >= bn_hits else "banglish"
+    return "en"
 
 
 CONFIRM_ASK = {
