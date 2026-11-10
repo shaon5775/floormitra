@@ -171,15 +171,15 @@ def supervisor_screen() -> None:
     st.subheader("Shift handover report")
     if st.button("📝 Write the shift report with Gemini", key="report"):
         if offline:
-            st.session_state.report = "(offline demo) " + str(plant.summary())
+            st.session_state.shift_report = "(offline demo) " + str(plant.summary())
         else:
             with st.spinner("Gemini is writing the report..."):
                 try:
-                    st.session_state.report = write_text(shift_report_prompt(plant))
+                    st.session_state.shift_report = write_text(shift_report_prompt(plant))
                 except Exception as e:  # noqa: BLE001
-                    st.session_state.report = f"Could not write the report: {str(e)[:160]}"
-    if st.session_state.get("report"):
-        st.markdown(st.session_state.report)
+                    st.session_state.shift_report = f"Could not write the report: {str(e)[:160]}"
+    if st.session_state.get("shift_report"):
+        st.markdown(st.session_state.shift_report)
 
 
 if screen.startswith("👷"):
