@@ -41,14 +41,20 @@ with st.sidebar:
 agent, voice = build(offline=offline, plant=plant)
 
 
-def run_question(q: str) -> None:
+# Live 11 Nov 2026: speech of a Bengali worker sometimes comes back in Latin letters ("banglish") and Hindi as
+# Hinglish. For SPOKEN questions, answer in the language itself (own script), since the answer is read aloud.
+SPOKEN_ANSWER_LANG = {"banglish": "bn", "bn": "bn", "hinglish": "hi", "hi": "hi"}
+
+
+def run_question(q: str, spoken_lang: str = "") -> None:
     q = (q or "").strip()
     if not q:
         st.warning("Say or type a question first.")
         return
+    lang = LANGS[lang_label] or SPOKEN_ANSWER_LANG.get(spoken_lang, spoken_lang)
     with st.spinner("FloorMitra is checking the manuals..."):
         try:
-            st.session_state.turn = agent.ask(q, LANGS[lang_label], worker=worker)
+            st.session_state.turn = agent.ask(q, lang, worker=worker)
         except Exception as e:  # noqa: BLE001
             st.error(f"Gemini did not answer ({str(e)[:160]}). Please try again in a minute.")
             return
@@ -72,12 +78,13 @@ def worker_screen() -> None:
                     try:
                         heard = voice.listen(data, "audio/wav", LANGS[lang_label])
                         st.session_state["heard"] = heard["text"]
+                        st.session_state.heard_lang = heard["language"]
                     except Exception as e:  # noqa: BLE001
                         st.error(f"Could not hear that ({str(e)[:120]}). Please try again.")
                 st.session_state.heard_hash = h
         st.text_area("What FloorMitra heard (you can correct it)", key="heard", height=80)
         if st.button("Ask FloorMitra", key="ask_voice", type="primary"):
-            run_question(st.session_state.get("heard", ""))
+            run_question(st.session_state.get("heard", ""), st.session_state.get("heard_lang", ""))
     with type_tab:
         st.text_area("Type your question", key="typed", height=80, placeholder=EXAMPLES[0])
         if st.button("Ask FloorMitra", key="ask_typed", type="primary"):
