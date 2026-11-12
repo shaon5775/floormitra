@@ -1,15 +1,68 @@
-"""FloorMitra demo app.   Run:  streamlit run app.py"""
+"""FloorMitra demo app (mobile-first).   Run:  streamlit run app.py
+
+Worker: chat-style answers with a red lockout warning, numbered steps, the manual source and a big Yes / No card
+before anything is written. Supervisor: KPI cards, ticket list with actions, Gemini shift report.
+"""
 from __future__ import annotations
 
 import hashlib
+import html
+import re
 
 import streamlit as st
 
 from fm.agent import shift_report_prompt
 from fm.config import build, gemini_key, write_text
+from fm.lang import CONFIRM_ASK
 from fm.plant import Plant
 
-st.set_page_config(page_title="FloorMitra", page_icon="🛠️", layout="wide")
+st.set_page_config(page_title="FloorMitra", page_icon="🛠️", layout="centered", initial_sidebar_state="collapsed")
+
+CSS = """
+<style>
+#MainMenu, footer, [data-testid="stSidebarCollapsedControl"] {visibility:hidden}
+.block-container {padding-top:1rem; max-width:720px}
+.fm-top {background:#2c2c2a; color:#fff; border-radius:16px; padding:12px 16px; display:flex;
+  justify-content:space-between; align-items:center; margin-bottom:8px}
+.fm-top b {font-size:18px} .fm-chip {font-size:12px; padding:3px 10px; border-radius:8px; background:#3b6d11; color:#fff}
+.fm-chip.red {background:#a32d2d}
+.fm-me {margin:8px 0 8px auto; background:#c0dd97; color:#173404; border-radius:16px 16px 4px 16px;
+  padding:9px 13px; max-width:82%; width:fit-content; font-size:15px}
+.fm-bot {margin:8px 0; background:#fff; color:#2c2c2a; border:1px solid #e5e3dc; border-radius:16px 16px 16px 4px;
+  padding:11px 13px; max-width:92%; font-size:15px}
+.fm-warn {background:#fcebeb; color:#a32d2d; border-radius:10px; padding:7px 10px; font-size:14px; font-weight:600;
+  margin-bottom:8px}
+.fm-step {display:flex; gap:8px; align-items:flex-start; margin:6px 0; line-height:1.5}
+.fm-num {width:22px; height:22px; border-radius:50%; background:#e6f1fb; color:#0c447c; font-size:12px; flex:none;
+  display:flex; align-items:center; justify-content:center; margin-top:2px}
+.fm-src {font-size:12px; color:#5f5e5a; margin-top:8px; border-top:1px solid #e5e3dc; padding-top:6px}
+.fm-act {background:#faeeda; color:#633806; border-radius:14px; padding:10px 13px; font-size:15px; margin:6px 0 4px}
+.fm-done {margin:8px 0; background:#eaf3de; color:#27500a; border:1px solid #c0dd97; border-radius:14px;
+  padding:9px 13px; width:fit-content; font-size:15px}
+.fm-hint {color:#5f5e5a; font-size:14px}
+.fm-cards {display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:6px 0 10px}
+.fm-card {background:#f1efe8; border-radius:12px; padding:10px 12px; color:#2c2c2a}
+.fm-card .n {font-size:26px; font-weight:700} .fm-card .t {font-size:12px; color:#5f5e5a}
+.fm-card.red {background:#fcebeb} .fm-card.red .n {color:#a32d2d}
+.fm-card.amber {background:#faeeda} .fm-card.amber .n {color:#633806}
+.fm-sev {font-size:12px; padding:2px 9px; border-radius:8px}
+.fm-sev.high, .fm-sev.critical {background:#fcebeb; color:#a32d2d}
+.fm-sev.medium {background:#faeeda; color:#633806} .fm-sev.low {background:#eaf3de; color:#27500a}
+.fm-report {background:#e6f1fb; color:#0c447c; border-radius:12px; padding:10px 13px; font-size:14px}
+[data-testid="stAudioInput"] {border:3px solid #ef9f27; border-radius:18px; background:#fac775; padding:4px}
+[data-testid="stAudioInput"] label p {color:#412402; font-weight:700; font-size:15px}
+div[role="radiogroup"] {gap:6px; flex-wrap:nowrap}
+div[role="radiogroup"] label {border:1px solid #d3d1c7; border-radius:12px; padding:6px 10px; background:#fff;
+  flex:1; justify-content:center; margin:0}
+[data-testid="stRadioOption"] > div > div:not([data-testid]) {display:none}
+div[role="radiogroup"] label p {font-size:14px; white-space:nowrap}
+[data-testid="stRadioOption"][data-selected="true"], div[role="radiogroup"] label:has(input:checked)
+  {background:#2c2c2a; border-color:#2c2c2a}
+[data-testid="stRadioOption"][data-selected="true"] p, div[role="radiogroup"] label:has(input:checked) p {color:#fff}
+.stButton button {min-height:46px; border-radius:12px; font-size:15px}
+</style>
+"""
+st.markdown(CSS, unsafe_allow_html=True)
 
 
 @st.cache_resource
@@ -19,172 +72,241 @@ def shared_plant() -> Plant:
 
 
 plant = shared_plant()
-LANGS = {"Auto-detect": "", "বাংলা (Bengali)": "bn", "हिन्दी (Hindi)": "hi", "English": "en",
-         "Hinglish": "hinglish", "Banglish": "banglish"}
-EXAMPLES = ["দুই নম্বর লেদ মেশিনে E-205 দেখাচ্ছে, কী করব?",
-            "Compressor pe A-01 alarm aa raha hai, temperature high",
-            "पैकिंग लाइन का कन्वेयर रोलर से बहुत आवाज़ आ रही है",
-            "Spindle belt SB-1250 store-e koyta ache?"]
+LANGS = {"Auto": "", "বাংলা": "bn", "हिन्दी": "hi", "English": "en", "Hinglish": "hinglish", "Banglish": "banglish"}
+EXAMPLES = ["দুই নম্বর লেদ মেশিনে E-205 দেখাচ্ছে, কী করব?", "Compressor pe A-01 alarm aa raha hai",
+            "पैकिंग लाइन का कन्वेयर रोलर से बहुत आवाज़ आ रही है", "Spindle belt SB-1250 store-e koyta ache?"]
+LOCKOUT = {"bn": "আগে লকআউট করুন (SOP-LOTO-01)", "hi": "पहले लॉकआउट करें (SOP-LOTO-01)",
+           "en": "Lockout first (SOP-LOTO-01)"}
+LOCK_WORDS = re.compile(r"LOTO|lockout|lock out|লকআউট|লক আউট|लॉकआउट|लॉक आउट", re.I)
+# Live 11 Nov 2026: Bengali speech sometimes comes back in Latin letters ("banglish"), Hindi as Hinglish.
+# For SPOKEN questions answer in the language itself (own script), since the answer is read aloud.
+SPOKEN_ANSWER_LANG = {"banglish": "bn", "bn": "bn", "hinglish": "hi", "hi": "hi"}
 
-with st.sidebar:
-    st.markdown("## 🛠️ FloorMitra")
-    screen = st.radio("Screen", ["👷 Worker (voice)", "🧑‍💼 Supervisor"], key="screen")
+ss = st.session_state
+ss.setdefault("chat", [])          # [{"role": "me"|"bot"|"done", ...}]
+ss.setdefault("question", "")
+
+# ---- header + settings + navigation ------------------------------------------------------------------------
+with st.expander("⚙️ Settings"):
     has_key = bool(gemini_key())
     offline = st.toggle("Offline demo (no API key)", value=not has_key,
                         help="Rule-based stand-in for Gemini, so the flow can be tried without a key.")
-    worker = st.text_input("Your name", value="Ravi (Line 1)", key="worker")
+    worker = st.text_input("Your name", value="Ravi (Line 2)", key="worker")
     lang_label = st.selectbox("Your language", list(LANGS), key="lang")
-    st.markdown("**Try saying:**\n" + "\n".join(f"- {e}" for e in EXAMPLES))
-    st.caption("Sample plant: 6 machines, 5 English manuals/SOPs, a mock maintenance system. "
-               "Answers come only from the manuals; tickets need your 'yes'.")
+    st.caption("Sample plant: 6 machines, 5 English manuals/SOPs, a mock maintenance system.")
+
+down = plant.summary()["machines_down"]
+chip = f'<span class="fm-chip red">{down} down</span>' if down else f'<span class="fm-chip">{html.escape(worker)} · {html.escape(lang_label)}</span>'
+st.markdown(f'<div class="fm-top"><b>🛠️ FloorMitra</b>{chip}</div>', unsafe_allow_html=True)
+nav = st.radio("Screen", ["🎤 Ask", "🎫 My tickets", "📊 Supervisor"], horizontal=True, key="nav",
+               label_visibility="collapsed")
 
 agent, voice = build(offline=offline, plant=plant)
 
 
-# Live 11 Nov 2026: speech of a Bengali worker sometimes comes back in Latin letters ("banglish") and Hindi as
-# Hinglish. For SPOKEN questions, answer in the language itself (own script), since the answer is read aloud.
-SPOKEN_ANSWER_LANG = {"banglish": "bn", "bn": "bn", "hinglish": "hi", "hi": "hi"}
+def esc(t: str) -> str:
+    return html.escape(t or "")
 
 
-def run_question(q: str, spoken_lang: str = "") -> None:
+def sentences(text: str) -> list[str]:
+    parts = re.split(r"(?<=[।.!?])\s+", (text or "").strip())
+    return [p for p in parts if p.strip()]
+
+
+def bot_html(turn) -> str:
+    sents = sentences(turn.answer)
+    lock = bool(LOCK_WORDS.search(turn.answer)) or any("SOP-LOTO" in s["source"] for s in turn.sources[:1])
+    steps = [s for s in sents if not LOCK_WORDS.search(s)]
+    if turn.pending:                            # the Yes/No card asks this, so drop the asking sentences
+        ask_parts = {p.strip() for v in CONFIRM_ASK.values() for p in sentences(v)}
+        steps = [s for s in steps if s.strip() not in ask_parts]
+        if len(steps) > 1 and steps[-1].rstrip().endswith(("?", "？")):
+            steps = steps[:-1]
+    out = []
+    if lock:
+        out.append(f'<div class="fm-warn">🔒 {esc(LOCKOUT.get(turn.language, LOCKOUT["en"]))}</div>')
+    if len(steps) == 1:
+        out.append(f"<div>{esc(steps[0])}</div>")
+    for i, s in enumerate(steps if len(steps) > 1 else [], 1):
+        out.append(f'<div class="fm-step"><span class="fm-num">{i}</span><span>{esc(s)}</span></div>')
+    if turn.sources:
+        out.append(f'<div class="fm-src">📘 {esc(turn.sources[0]["source"])}</div>')
+    return '<div class="fm-bot">' + "".join(out) + "</div>"
+
+
+def ask(q: str, spoken_lang: str = "") -> None:
     q = (q or "").strip()
     if not q:
-        st.warning("Say or type a question first.")
+        st.warning("Say or type your question first.")
         return
     lang = LANGS[lang_label] or SPOKEN_ANSWER_LANG.get(spoken_lang, spoken_lang)
-    with st.spinner("FloorMitra is checking the manuals..."):
+    with st.spinner("Checking the manuals..."):
         try:
-            st.session_state.turn = agent.ask(q, lang, worker=worker)
+            turn = agent.ask(q, lang, worker=worker)
         except Exception as e:  # noqa: BLE001
-            st.error(f"Gemini did not answer ({str(e)[:160]}). Please try again in a minute.")
+            st.error(f"Gemini did not answer ({str(e)[:140]}). Try again in a minute.")
             return
-    st.session_state.spoken = None
-    st.session_state.done_msg = None
+    for m in ss.chat:                             # an older unanswered Yes/No card expires
+        if m["role"] == "bot":
+            m["turn"].pending = None
+    ss.chat += [{"role": "me", "text": q, "spoken": bool(spoken_lang)}, {"role": "bot", "turn": turn}]
+    ss.turn = turn
+    ss.spoken, ss.spoken_for = None, None
+
+
+def use_example(text: str) -> None:
+    ss.question = text
 
 
 def worker_screen() -> None:
-    st.title("👷 FloorMitra — ask about any machine, hands-free")
-    st.caption("Speak in Bengali, Hindi, Hinglish, Banglish or English. FloorMitra reads the English manuals for you, "
-               "answers in your language with the source, and raises a ticket only when you say yes.")
-    speak_tab, type_tab = st.tabs(["🎤 Speak", "⌨️ Type"])
-    with speak_tab:
-        st.markdown("1. Tap the 🎤 and speak. 2. Tap again to stop. 3. Check the words, then press **Ask FloorMitra**.")
-        audio = st.audio_input("Tap to speak", key="mic")
-        if audio is not None:
-            data = audio.getvalue()
-            h = hashlib.md5(data).hexdigest()
-            if st.session_state.get("heard_hash") != h:
-                with st.spinner("Listening..."):
-                    try:
-                        heard = voice.listen(data, "audio/wav", LANGS[lang_label])
-                        st.session_state["heard"] = heard["text"]
-                        st.session_state.heard_lang = heard["language"]
-                    except Exception as e:  # noqa: BLE001
-                        st.error(f"Could not hear that ({str(e)[:120]}). Please try again.")
-                st.session_state.heard_hash = h
-        st.text_area("What FloorMitra heard (you can correct it)", key="heard", height=80)
-        if st.button("Ask FloorMitra", key="ask_voice", type="primary"):
-            run_question(st.session_state.get("heard", ""), st.session_state.get("heard_lang", ""))
-    with type_tab:
-        st.text_area("Type your question", key="typed", height=80, placeholder=EXAMPLES[0])
-        if st.button("Ask FloorMitra", key="ask_typed", type="primary"):
-            run_question(st.session_state.get("typed", ""))
+    if ss.pop("clear_q", False):
+        ss.question = ""
+    if not ss.chat:
+        st.markdown('<p class="fm-hint">Ask about any machine: an alarm code, a noise, a part. FloorMitra reads the '
+                    'English manuals and answers in your language. Nothing is raised until you say yes.</p>',
+                    unsafe_allow_html=True)
+        cols = st.columns(2)
+        for i, e in enumerate(EXAMPLES):
+            cols[i % 2].button(e, key=f"ex_{i}", on_click=use_example, args=(e,), use_container_width=True)
 
-    turn = st.session_state.get("turn")
-    if not turn:
-        return
-    st.divider()
-    st.info(f"Question: {turn.question}")
-    st.markdown(f"### {turn.answer}")
-    if st.button("🔊 Hear the answer", key="hear"):
-        with st.spinner("Preparing the voice..."):
-            st.session_state.spoken = voice.speak(turn.answer)
-            st.session_state.spoken_for = turn.question
-    if st.session_state.get("spoken") and st.session_state.get("spoken_for") == turn.question:
-        st.audio(st.session_state.spoken, format="audio/wav", autoplay=True)
+    for i, m in enumerate(ss.chat):
+        if m["role"] == "me":
+            st.markdown(f'<div class="fm-me">{"🎤 " if m.get("spoken") else ""}{esc(m["text"])}</div>',
+                        unsafe_allow_html=True)
+        elif m["role"] == "done":
+            st.markdown(f'<div class="fm-done">✔ {esc(m["text"])}</div>', unsafe_allow_html=True)
+        else:
+            turn = m["turn"]
+            st.markdown(bot_html(turn), unsafe_allow_html=True)
+            last = i == len(ss.chat) - 1 or (i == len(ss.chat) - 2 and ss.chat[-1]["role"] == "done")
+            if last:
+                if st.button("🔊 Hear the answer", key="hear"):
+                    with st.spinner("Preparing the voice..."):
+                        ss.spoken, ss.spoken_for = voice.speak(turn.answer), id(turn)
+                if ss.get("spoken") and ss.get("spoken_for") == id(turn):
+                    st.audio(ss.spoken, format="audio/wav", autoplay=True)
+            if turn.pending:
+                st.markdown(f'<div class="fm-act">✋ <b>Shall I do this?</b><br>{esc(turn.pending["summary"])}</div>',
+                            unsafe_allow_html=True)
+                c1, c2 = st.columns(2)
+                if c1.button("✅ Yes, do it", key="yes", type="primary", use_container_width=True):
+                    ss.chat.append({"role": "done", "text": agent.confirm(turn.pending, yes=True)})
+                    turn.pending = None
+                    st.rerun()
+                if c2.button("❌ No", key="no", use_container_width=True):
+                    ss.chat.append({"role": "done", "text": agent.confirm(turn.pending, yes=False)})
+                    turn.pending = None
+                    st.rerun()
+            if last:
+                with st.expander("🧭 What FloorMitra did"):
+                    for s in turn.steps:
+                        st.write(s)
+                    for s in turn.sources:
+                        st.caption(f"📘 {s['source']}")
+                    st.caption(f"Model: {turn.model} · tokens: {turn.tokens:,} · {turn.latency_s} s")
 
-    if turn.pending:
+    st.markdown("&nbsp;", unsafe_allow_html=True)
+    audio = st.audio_input("🎤 Tap to speak, tap again to stop", key="mic")
+    if audio is not None:
+        data = audio.getvalue()
+        h = hashlib.md5(data).hexdigest()
+        if ss.get("heard_hash") != h:
+            with st.spinner("Listening..."):
+                try:
+                    heard = voice.listen(data, "audio/wav", LANGS[lang_label])
+                    ss.question = ss.heard_text = heard["text"]
+                    ss.heard_lang = heard["language"]
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"Could not hear that ({str(e)[:120]}). Please try again.")
+            ss.heard_hash = h
+    st.text_area("Your question (check the words, or type)", key="question", height=80,
+                 placeholder="Lathe 2 shows E-205, what do I do?")
+    if st.button("Ask FloorMitra", key="ask", type="primary", use_container_width=True):
+        spoken = ss.get("heard_lang", "") if ss.question and ss.question == ss.get("heard_text") else ""
+        before = len(ss.chat)
+        ask(ss.question, spoken)
+        if len(ss.chat) > before:
+            ss.clear_q = True       # empty the box on the next run (a widget's value can't change after it is drawn)
+            st.rerun()
+
+
+def my_tickets_screen() -> None:
+    mine = [t for t in plant.tickets() if t["reported_by"] == worker]
+    st.markdown(f"**Tickets raised by {esc(worker)}**")
+    if not mine:
+        st.caption("None yet. Ask about a fault on the Ask screen and say yes.")
+    for t in mine:
         with st.container(border=True):
-            st.markdown(f"**✋ Waiting for your yes:** {turn.pending['summary']}")
-            c1, c2 = st.columns(2)
-            yes = c1.button("✅ Yes, do it", key="yes", type="primary")
-            no = c2.button("❌ No", key="no")
-            if yes or no:
-                st.session_state.done_msg = agent.confirm(turn.pending, yes=yes)
-                turn.pending = None
-                st.rerun()
-    if st.session_state.get("done_msg"):
-        st.success(st.session_state.done_msg)
-
-    if turn.sources:
-        with st.expander(f"📘 Source in the manual ({len(turn.sources)})"):
-            for s in turn.sources:
-                st.markdown(f"**{s['source']}**")
-                st.text(s["text"][:900])
-    with st.expander("🧭 What FloorMitra did (decision trace)"):
-        for step in turn.steps:
-            st.write(step)
-        st.caption(f"Model: {turn.model} · tokens: {turn.tokens:,} · time: {turn.latency_s} s")
+            st.markdown(f'**#{t["id"]} {esc(t["machine_id"])}** &nbsp; <span class="fm-sev {t["severity"]}">'
+                        f'{t["severity"]}</span> &nbsp; {t["status"]}<br>{esc(t["problem"])}', unsafe_allow_html=True)
 
 
 def supervisor_screen() -> None:
-    st.title("🧑‍💼 Supervisor — live floor view")
     s = plant.summary()
-    cols = st.columns(5)
-    for col, (label, key) in zip(cols, [("Open tickets", "open_tickets"), ("High / critical", "critical_or_high"),
-                                         ("Machines down", "machines_down"), ("Open work orders", "open_work_orders"),
-                                         ("Spares below minimum", "spares_below_minimum")]):
-        col.metric(label, s[key])
+    st.markdown(
+        '<div class="fm-cards">'
+        f'<div class="fm-card"><div class="n">{s["open_tickets"]}</div><div class="t">Open tickets</div></div>'
+        f'<div class="fm-card red"><div class="n">{s["critical_or_high"]}</div><div class="t">High / critical</div></div>'
+        f'<div class="fm-card"><div class="n">{s["open_work_orders"]}</div><div class="t">Open work orders</div></div>'
+        f'<div class="fm-card amber"><div class="n">{s["spares_below_minimum"]}</div><div class="t">Spares low</div></div>'
+        "</div>", unsafe_allow_html=True)
 
-    st.subheader("Fault tickets")
-    tickets = plant.tickets()
-    if tickets:
-        st.dataframe([{k: t[k] for k in ("id", "at", "machine_id", "severity", "status", "problem", "reported_by",
-                                         "language", "worker_words", "source")} for t in tickets],
-                     hide_index=True, use_container_width=True)
-        open_ids = [t["id"] for t in tickets if t["status"] != "closed"]
-        if open_ids:
-            c1, c2 = st.columns([1, 3])
-            tid = c1.selectbox("Ticket", open_ids, key="close_id")
-            if c2.button("Mark fixed and close", key="close"):
-                plant.close_ticket(int(tid))
+    st.markdown("**Open tickets**")
+    open_t = plant.tickets(open_only=True)
+    if not open_t:
+        st.caption("No open tickets. They appear here when a worker says yes.")
+    has_wo = {w["ticket_id"] for w in plant.work_orders()}
+    for t in open_t:
+        with st.container(border=True):
+            st.markdown(f'**#{t["id"]} {esc(t["machine_id"])}** &nbsp; <span class="fm-sev {t["severity"]}">'
+                        f'{t["severity"]}</span><br>{esc(t["problem"])}<br><span class="fm-hint">'
+                        f'{esc(t["reported_by"])} · {esc(t["language"])} · “{esc(t["worker_words"][:80])}”</span>',
+                        unsafe_allow_html=True)
+            c1, c2 = st.columns(2)
+            if t["id"] in has_wo:
+                c1.caption("Work order made")
+            elif c1.button("Make work order", key=f"wo_{t['id']}", use_container_width=True):
+                plant.create_work_order(t["machine_id"], f"Fix: {t['problem'][:80]}", "", t["severity"],
+                                        ticket_id=t["id"])
                 st.rerun()
-    else:
-        st.caption("No tickets yet. Ask something on the Worker screen.")
+            if c2.button("Close (fixed)", key=f"close_{t['id']}", use_container_width=True):
+                plant.close_ticket(t["id"])
+                st.rerun()
 
-    st.subheader("Work orders")
-    wos = plant.work_orders()
-    if wos:
-        st.dataframe(wos, hide_index=True, use_container_width=True)
-    else:
-        st.caption("No work orders yet.")
+    wos = [w for w in plant.work_orders() if w["status"] == "open"]
+    with st.expander(f"🔧 Work orders ({len(wos)} open)"):
+        for w in wos:
+            st.markdown(f'#{w["id"]} **{esc(w["machine_id"])}** · {esc(w["task"])}'
+                        + (f' · part {esc(w["part_no"])}' if w["part_no"] else "") + f' · {w["priority"]}')
+        if not wos:
+            st.caption("None open.")
+    low = [r for r in plant.spares_all() if r["below_minimum"]]
+    with st.expander(f"📦 Spares below minimum ({len(low)})"):
+        for r in low:
+            st.markdown(f'**{r["part_no"]}** {esc(r["name"])} · {r["qty"]} left (min {r["min_qty"]}) · {r["bin"]}')
+    with st.expander("🏭 Machines"):
+        for m in plant.machines():
+            st.markdown(f'{"🔴" if m["status"] == "down" else "🟢"} **{m["id"]}** · {esc(m["name"])} · {m["line"]}')
 
-    left, right = st.columns(2)
-    with left:
-        st.subheader("Machines")
-        st.dataframe(plant.machines(), hide_index=True, use_container_width=True)
-    with right:
-        st.subheader("Spare stock")
-        st.dataframe([{**r, "below_minimum": "⚠️" if r["below_minimum"] else ""} for r in plant.spares_all()],
-                     hide_index=True, use_container_width=True)
-
-    st.subheader("Shift handover report")
-    if st.button("📝 Write the shift report with Gemini", key="report"):
+    if st.button("📝 Write the shift report with Gemini", key="report", use_container_width=True):
         if offline:
-            st.session_state.shift_report = "(offline demo) " + str(plant.summary())
+            ss.shift_report = "(offline demo) " + str(plant.summary())
         else:
             with st.spinner("Gemini is writing the report..."):
                 try:
-                    st.session_state.shift_report = write_text(shift_report_prompt(plant))
+                    ss.shift_report = write_text(shift_report_prompt(plant))
                 except Exception as e:  # noqa: BLE001
-                    st.session_state.shift_report = f"Could not write the report: {str(e)[:160]}"
-    if st.session_state.get("shift_report"):
-        st.markdown(st.session_state.shift_report)
+                    ss.shift_report = f"Could not write the report: {str(e)[:160]}"
+    if ss.get("shift_report"):
+        st.markdown(f'<div class="fm-report">📝 <b>Shift report (Gemini)</b></div>', unsafe_allow_html=True)
+        st.markdown(ss.shift_report)
 
 
-if screen.startswith("👷"):
+if nav.startswith("🎤"):
     worker_screen()
+elif nav.startswith("🎫"):
+    my_tickets_screen()
 else:
     supervisor_screen()
-st.caption("Guidance only, from the plant's own manuals. Follow lockout (SOP-LOTO-01) and your supervisor's "
-           "instructions. Sample data; fictional machines.")
+st.caption("Guidance only, from the plant's own manuals. Follow lockout (SOP-LOTO-01) and your supervisor. "
+           "Sample data; fictional machines.")
