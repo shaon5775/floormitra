@@ -113,11 +113,25 @@ def sentences(text: str) -> list[str]:
     return [p for p in parts if p.strip()]
 
 
-def bot_html(turn) -> str:
+MINOR_SECTIONS = ("Spare parts", "Safety", "Daily", "Weekly")
+
+
+def main_source(turn) -> dict | None:
+    """The section that answers the question (not the parts list or the general safety page), else the first."""
+    for s in turn.sources:
+        if not any(m in s["source"] for m in MINOR_SECTIONS):
+            return s
+    return turn.sources[0] if turn.sources else None
+
+
+def bot_html(turn, asked: bool) -> str:
     sents = sentences(turn.answer)
-    lock = bool(LOCK_WORDS.search(turn.answer)) or any("SOP-LOTO" in s["source"] for s in turn.sources[:1])
+    # Safety first: a repair job (an action was proposed) whose manual sections require lockout gets the red bar,
+    # even if the model forgot to say it (live 12 Nov: conveyor roller answer without lockout).
+    manual_lock = any(LOCK_WORDS.search(s["text"]) for s in turn.sources)
+    lock = bool(LOCK_WORDS.search(turn.answer)) or (asked and manual_lock)
     steps = [s for s in sents if not LOCK_WORDS.search(s)]
-    if turn.pending:                            # the Yes/No card asks this, so drop the asking sentences
+    if asked:                                   # the Yes/No card asks this, so drop the asking sentences
         ask_parts = {p.strip() for v in CONFIRM_ASK.values() for p in sentences(v)}
         steps = [s for s in steps if s.strip() not in ask_parts]
         if len(steps) > 1 and steps[-1].rstrip().endswith(("?", "？")):
@@ -129,8 +143,9 @@ def bot_html(turn) -> str:
         out.append(f"<div>{esc(steps[0])}</div>")
     for i, s in enumerate(steps if len(steps) > 1 else [], 1):
         out.append(f'<div class="fm-step"><span class="fm-num">{i}</span><span>{esc(s)}</span></div>')
-    if turn.sources:
-        out.append(f'<div class="fm-src">📘 {esc(turn.sources[0]["source"])}</div>')
+    src = main_source(turn)
+    if src:
+        out.append(f'<div class="fm-src">📘 {esc(src["source"])}</div>')
     return '<div class="fm-bot">' + "".join(out) + "</div>"
 
 
@@ -149,7 +164,8 @@ def ask(q: str, spoken_lang: str = "") -> None:
     for m in ss.chat:                             # an older unanswered Yes/No card expires
         if m["role"] == "bot":
             m["turn"].pending = None
-    ss.chat += [{"role": "me", "text": q, "spoken": bool(spoken_lang)}, {"role": "bot", "turn": turn}]
+    ss.chat += [{"role": "me", "text": q, "spoken": bool(spoken_lang)},
+                {"role": "bot", "turn": turn, "asked": bool(turn.pending)}]
     ss.turn = turn
     ss.spoken, ss.spoken_for = None, None
 
@@ -177,7 +193,7 @@ def worker_screen() -> None:
             st.markdown(f'<div class="fm-done">✔ {esc(m["text"])}</div>', unsafe_allow_html=True)
         else:
             turn = m["turn"]
-            st.markdown(bot_html(turn), unsafe_allow_html=True)
+            st.markdown(bot_html(turn, m.get("asked", False)), unsafe_allow_html=True)
             last = i == len(ss.chat) - 1 or (i == len(ss.chat) - 2 and ss.chat[-1]["role"] == "done")
             if last:
                 if st.button("🔊 Hear the answer", key="hear"):
